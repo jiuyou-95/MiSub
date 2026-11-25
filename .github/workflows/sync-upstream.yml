@@ -127,6 +127,15 @@ jobs:
           name: misub-pages-dist
           path: dist
 
+      - name: Set up Node.js for Pages Functions
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Pages Functions runtime dependencies
+        run: npm ci --omit=dev --registry=https://registry.npmjs.org/ --replace-registry-host=always
+
       - name: Validate Cloudflare secrets
         shell: bash
         env:
