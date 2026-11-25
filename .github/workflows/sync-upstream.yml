@@ -1,39 +1,73 @@
-name: 自动同步上游 MiSub
+name: Upstream Sync and Cloudflare Pages Rebuild
 
 on:
   schedule:
-    # 每天北京时间 08:00（UTC 00:00）检查一次
-    - cron: '0 0 * * *'
-  workflow_dispatch:  # 可在 Actions 页面手动触发
+    # Daily at 08:27 Beijing time (UTC+8).
+    - cron: "27 0 * * *"
+  workflow_dispatch:
 
 permissions:
-  contents: write  # 允许 push 回 fork
+  contents: write
+
+concurrency:
+  group: misub-upstream-sync-main
+  cancel-in-progress: false
 
 jobs:
   sync:
+    name: Safely merge upstream main
     runs-on: ubuntu-latest
+    if: ${{ github.event.repository.fork }}
+
     steps:
-      - name: 检出仓库
+      - name: Checkout fork main
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: main
 
-      - name: 配置 git 身份
+      - name: Configure Git and upstream
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: 同步上游 imzyb/MiSub
-        run: |
           git remote add upstream https://github.com/imzyb/MiSub.git
-          git fetch upstream main
-          LOCAL=$(git rev-parse HEAD)
-          REMOTE=$(git rev-parse upstream/main)
-          if [ "$LOCAL" = "$REMOTE" ]; then
-            echo "✅ 已是最新，无需同步"
+          git fetch --prune origin main
+          git fetch --prune upstream main
+
+      - name: Merge upstream without overwriting fork changes
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout main
+          git reset --hard origin/main
+
+          ORIGIN_SHA="$(git rev-parse origin/main)"
+          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+
+          if [ "$ORIGIN_SHA" = "$UPSTREAM_SHA" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Fork is already synchronized with upstream."
+            exit 0
+          fi
+
+          if ! git merge --no-edit upstream/main; then
+            git merge --abort || true
+            echo "::error title=Upstream merge conflict::Automatic synchronization stopped without overwriting fork changes. Resolve the conflict manually."
+            exit 1
+          fi
+
+          git push origin main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "Upstream changes were merged and pushed. Cloudflare Pages Git integration will rebuild main automatically."
+
+      - name: Report synchronization result
+        shell: bash
+        run: |
+          if [ "${{ steps.sync.outputs.changed }}" = "true" ]; then
+            echo "Upstream merged; waiting for Cloudflare Pages Git integration to deploy the new main commit."
           else
-            echo "🔁 检测到上游更新，开始同步..."
-            git merge upstream/main --no-edit
-            git push origin main
-            echo "✅ 已推送，Cloudflare Pages 将自动重新构建"
+            echo "No upstream changes were found; no Cloudflare Pages rebuild was needed."
           fi
